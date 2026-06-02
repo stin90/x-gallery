@@ -310,6 +310,7 @@ body.xg-no-scroll::-webkit-scrollbar {
 
 #xg-lightbox .xg-lb-post-link,
 #xg-lightbox .xg-lb-download {
+  position: static; /* keep both in the flex row; defends against host-page <a>/<button> resets */
   display: inline-flex;
   align-items: center;
   background: rgba(0, 0, 0, 0.5);
