@@ -413,7 +413,10 @@ function openLightbox(tweetId, imageIndex = 0) {
   modal.id = 'xg-lightbox';
   modal.innerHTML = `
     <div class="xg-lb-backdrop"></div>
-    <a class="xg-lb-post-link" target="_blank" rel="noopener">View post \u2197</a>
+    <div class="xg-lb-actions">
+      <a class="xg-lb-post-link" target="_blank" rel="noopener">View post \u2197</a>
+      <button class="xg-lb-download" aria-label="Download">Download</button>
+    </div>
     <button class="xg-lb-close" aria-label="Close">\u00d7</button>
     <button class="xg-lb-prev" aria-label="Previous">\u2039</button>
     <button class="xg-lb-next" aria-label="Next">\u203a</button>
@@ -427,6 +430,7 @@ function openLightbox(tweetId, imageIndex = 0) {
   modal.querySelector('.xg-lb-close').addEventListener('click', closeLightbox);
   modal.querySelector('.xg-lb-prev').addEventListener('click', () => navigateLightbox(-1));
   modal.querySelector('.xg-lb-next').addEventListener('click', () => navigateLightbox(1));
+  modal.querySelector('.xg-lb-download').addEventListener('click', downloadCurrentItem);
 
   const keyHandler = (e) => {
     if (e.key === 'Escape') closeLightbox();
@@ -523,6 +527,289 @@ function renderPostInfo(container, item) {
     t.textContent = item.text;
     container.appendChild(t);
   }
+}
+
+// --- One-click media download (images + HLS videos), entirely client-side ---
+
+function mediaUsername(item) {
+  if (item.handle) return item.handle.replace(/^@/, '');
+  if (item.link) {
+    const m = item.link.match(/(?:twitter|x)\.com\/([^/]+)\/status\//);
+    if (m) return m[1];
+  }
+  return 'x';
+}
+
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// Fetch many URLs into ArrayBuffers, preserving order, with bounded concurrency
+async function fetchBuffers(urls, onProgress, concurrency = 6) {
+  const results = new Array(urls.length);
+  let next = 0, done = 0;
+  async function worker() {
+    while (next < urls.length) {
+      const idx = next++;
+      const r = await fetch(urls[idx]);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      results[idx] = await r.arrayBuffer();
+      if (onProgress) onProgress(++done, urls.length);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, urls.length) }, worker)
+  );
+  return results;
+}
+
+async function downloadImage(item) {
+  const fmt = item.src.match(/[?&]format=(\w+)/);
+  const ext = fmt ? fmt[1] : 'jpg';
+  const idx = (item.imageIndex || 0) + 1;
+  // Prefer original resolution, falling back to the displayed size
+  const origUrl = item.src.replace(/([?&]name=)\w+/, '$1orig');
+  let res = await fetch(origUrl);
+  if (!res.ok) res = await fetch(item.src);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const blob = await res.blob();
+  triggerBlobDownload(blob, `${mediaUsername(item)}_${item.tweetId}_${idx}.${ext}`);
+}
+
+function getVideoUrlAsync(videoId) {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ action: 'getVideoUrl', videoId }, (r) => {
+        resolve(chrome.runtime.lastError || !r ? null : r.url || null);
+      });
+    } catch (e) { resolve(null); }
+  });
+}
+
+// Parse an HLS media playlist into its init-segment URL (#EXT-X-MAP) and segments
+function parseMediaPlaylist(text, baseUrl) {
+  const map = text.match(/#EXT-X-MAP:[^\n]*URI="([^"]+)"/);
+  const initUrl = map ? new URL(map[1], baseUrl).href : null;
+  const segUrls = text.split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'))
+    .map((u) => new URL(u, baseUrl).href);
+  return { initUrl, segUrls };
+}
+
+// --- ISO-BMFF box helpers for muxing X's separate audio + video fMP4 tracks ---
+function _u32(a, o) { return (a[o] << 24 | a[o + 1] << 16 | a[o + 2] << 8 | a[o + 3]) >>> 0; }
+function _wu32(a, o, v) { a[o] = (v >>> 24) & 255; a[o + 1] = (v >>> 16) & 255; a[o + 2] = (v >>> 8) & 255; a[o + 3] = v & 255; }
+function _boxType(a, o) { return String.fromCharCode(a[o + 4], a[o + 5], a[o + 6], a[o + 7]); }
+function _boxes(a, start, end) {
+  const list = [];
+  let o = start;
+  while (o + 8 <= end) {
+    let size = _u32(a, o);
+    let hdr = 8;
+    if (size === 1) { size = _u32(a, o + 12); hdr = 16; } // 64-bit size (low 32 bits; assumes < 4GB)
+    else if (size === 0) size = end - o;
+    if (size < 8) break;
+    list.push({ type: _boxType(a, o), start: o, end: o + size, hdr });
+    o += size;
+  }
+  return list;
+}
+function _find(a, start, end, type) { return _boxes(a, start, end).find((b) => b.type === type); }
+function _copy(a, b) { return a.slice(b.start, b.end); }
+function _mkbox(type, payload) {
+  const out = new Uint8Array(8 + payload.length);
+  _wu32(out, 0, out.length);
+  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+  out.set(payload, 8);
+  return out;
+}
+function _concat(parts) {
+  let n = 0;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+// Offset of track_ID within a tkhd box (depends on the box version flag)
+function _tkhdTrackIdOffset(arr, tkhd) {
+  return arr[tkhd.start + 8] === 1 ? tkhd.start + 28 : tkhd.start + 20;
+}
+
+// Combine a video-only fMP4 and an audio-only fMP4 (CMAF) into one MP4 with both
+// tracks. Verified against X's amplify/ext_tw_video HLS streams.
+function muxVideoAudio(vInit, vSegs, aInit, aSegs) {
+  const ftyp = _find(vInit, 0, vInit.length, 'ftyp');
+  const vMoov = _find(vInit, 0, vInit.length, 'moov');
+  if (!ftyp || !vMoov) throw new Error('bad video init segment');
+  const vMvhd = _find(vInit, vMoov.start + vMoov.hdr, vMoov.end, 'mvhd');
+  const vTrak = _find(vInit, vMoov.start + vMoov.hdr, vMoov.end, 'trak');
+  const vMvex = _find(vInit, vMoov.start + vMoov.hdr, vMoov.end, 'mvex');
+  const vTrex = vMvex && _find(vInit, vMvex.start + vMvex.hdr, vMvex.end, 'trex');
+  const vTkhd = vTrak && _find(vInit, vTrak.start + vTrak.hdr, vTrak.end, 'tkhd');
+  if (!vMvhd || !vTrak || !vTrex || !vTkhd) throw new Error('unexpected video init layout');
+  const videoId = _u32(vInit, _tkhdTrackIdOffset(vInit, vTkhd));
+  const audioId = videoId + 1;
+
+  const aMoov = _find(aInit, 0, aInit.length, 'moov');
+  const aTrak = aMoov && _find(aInit, aMoov.start + aMoov.hdr, aMoov.end, 'trak');
+  const aMvex = aMoov && _find(aInit, aMoov.start + aMoov.hdr, aMoov.end, 'mvex');
+  const aTrex = aMvex && _find(aInit, aMvex.start + aMvex.hdr, aMvex.end, 'trex');
+  if (!aTrak || !aTrex) throw new Error('unexpected audio init layout');
+
+  // Build a merged moov: video trak as-is + audio trak (remapped to audioId) + both trex
+  const mvhd = _copy(vInit, vMvhd);
+  _wu32(mvhd, mvhd.length - 4, audioId + 1); // next_track_ID
+  const vTrakB = _copy(vInit, vTrak);
+  const aTrakB = _copy(aInit, aTrak);
+  const aTkhd = _find(aTrakB, 8, aTrakB.length, 'tkhd');
+  if (!aTkhd) throw new Error('audio tkhd missing');
+  _wu32(aTrakB, _tkhdTrackIdOffset(aTrakB, aTkhd), audioId);
+  const vTrexB = _copy(vInit, vTrex);
+  const aTrexB = _copy(aInit, aTrex);
+  _wu32(aTrexB, 12, audioId); // trex track_ID
+  const moov = _mkbox('moov', _concat([mvhd, vTrakB, aTrakB, _mkbox('mvex', _concat([vTrexB, aTrexB]))]));
+
+  // Each media segment -> [moof, mdat], patching the traf's tfhd track_ID
+  function fragOf(seg, trackId) {
+    let moof = null;
+    let mdat = null;
+    for (const b of _boxes(seg, 0, seg.length)) {
+      if (b.type === 'moof') {
+        moof = _copy(seg, b);
+        const traf = _find(moof, 8, moof.length, 'traf');
+        const tfhd = traf && _find(moof, traf.start + 8, traf.end, 'tfhd');
+        if (tfhd) _wu32(moof, tfhd.start + 12, trackId);
+      } else if (b.type === 'mdat') {
+        mdat = _copy(seg, b);
+      }
+    }
+    return moof && mdat ? [moof, mdat] : null;
+  }
+  const vFrags = vSegs.map((s) => fragOf(s, videoId)).filter(Boolean);
+  const aFrags = aSegs.map((s) => fragOf(s, audioId)).filter(Boolean);
+
+  // Interleave fragments by index and give every moof a fresh sequence number
+  const parts = [_copy(vInit, ftyp), moov];
+  let seq = 1;
+  const n = Math.max(vFrags.length, aFrags.length);
+  for (let i = 0; i < n; i++) {
+    for (const grp of [vFrags[i], aFrags[i]]) {
+      if (!grp) continue;
+      const mfhd = _find(grp[0], 8, grp[0].length, 'mfhd');
+      if (mfhd) _wu32(grp[0], mfhd.start + 12, seq++);
+      parts.push(grp[0], grp[1]);
+    }
+  }
+  return new Blob(parts, { type: 'video/mp4' });
+}
+
+async function downloadVideo(item, onProgress) {
+  const masterUrl = await getVideoUrlAsync(item.videoId);
+  if (!masterUrl) throw new Error('Video stream not found yet');
+
+  let videoMediaUrl = masterUrl;
+  let audioMediaUrl = null;
+  let playlist = await (await fetch(masterUrl)).text();
+
+  // Master playlist: pick the highest-bandwidth video variant and its audio group
+  if (/#EXT-X-STREAM-INF/.test(playlist)) {
+    const lines = playlist.split(/\r?\n/);
+    const audios = [];
+    for (const ln of lines) {
+      if (ln.startsWith('#EXT-X-MEDIA') && /TYPE=AUDIO/.test(ln)) {
+        audios.push({
+          uri: (ln.match(/URI="([^"]+)"/) || [])[1],
+          grp: (ln.match(/GROUP-ID="([^"]+)"/) || [])[1],
+          def: /DEFAULT=YES/.test(ln),
+        });
+      }
+    }
+    let best = null, bestBw = -1, group = null;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
+        const bw = parseInt((lines[i].match(/BANDWIDTH=(\d+)/) || [])[1] || '0', 10);
+        const uri = (lines[i + 1] || '').trim();
+        if (uri && !uri.startsWith('#') && bw >= bestBw) {
+          bestBw = bw;
+          best = uri;
+          group = (lines[i].match(/AUDIO="([^"]+)"/) || [])[1] || null;
+        }
+      }
+    }
+    if (!best) throw new Error('No video variant found');
+    videoMediaUrl = new URL(best, masterUrl).href;
+    const aud = audios.find((a) => a.grp === group && a.def)
+      || audios.find((a) => a.grp === group)
+      || audios.find((a) => a.def) || audios[0];
+    if (aud && aud.uri) audioMediaUrl = new URL(aud.uri, masterUrl).href;
+    playlist = await (await fetch(videoMediaUrl)).text();
+  }
+
+  const video = parseMediaPlaylist(playlist, videoMediaUrl);
+  if (video.segUrls.length === 0) throw new Error('No video segments found');
+  let audio = null;
+  if (audioMediaUrl) {
+    audio = parseMediaPlaylist(await (await fetch(audioMediaUrl)).text(), audioMediaUrl);
+  }
+
+  const name = mediaUsername(item);
+  const toU8 = (ab) => new Uint8Array(ab);
+
+  // X demuxes audio into its own fMP4 rendition — fetch both tracks and mux them
+  if (video.initUrl && audio && audio.initUrl && audio.segUrls.length) {
+    const urls = [video.initUrl, ...video.segUrls, audio.initUrl, ...audio.segUrls];
+    const bufs = await fetchBuffers(urls, onProgress);
+    const vCount = video.segUrls.length;
+    const vInit = toU8(bufs[0]);
+    const vSegs = bufs.slice(1, 1 + vCount).map(toU8);
+    const aInit = toU8(bufs[1 + vCount]);
+    const aSegs = bufs.slice(2 + vCount).map(toU8);
+    triggerBlobDownload(muxVideoAudio(vInit, vSegs, aInit, aSegs), `${name}_${item.tweetId}.mp4`);
+    return;
+  }
+
+  // Single track (already muxed, or video-only). fMP4 -> .mp4, MPEG-TS -> .ts
+  const parts = video.initUrl ? [video.initUrl, ...video.segUrls] : video.segUrls;
+  const buffers = await fetchBuffers(parts, onProgress);
+  const ext = video.initUrl ? 'mp4' : 'ts';
+  triggerBlobDownload(
+    new Blob(buffers, { type: video.initUrl ? 'video/mp4' : 'video/mp2t' }),
+    `${name}_${item.tweetId}.${ext}`
+  );
+}
+
+async function downloadCurrentItem() {
+  if (!lightboxState) return;
+  const item = lightboxState.list[lightboxState.index];
+  const btn = lightboxState.modal.querySelector('.xg-lb-download');
+  if (!item || !btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = 'Downloading…';
+  try {
+    if (item.type === 'image') {
+      await downloadImage(item);
+    } else {
+      await downloadVideo(item, (done, total) => {
+        btn.textContent = `Downloading… ${Math.round((done / total) * 100)}%`;
+      });
+    }
+    btn.textContent = 'Saved ✓';
+  } catch (e) {
+    btn.textContent = 'Failed';
+  }
+  setTimeout(() => {
+    // Only reset if the modal is still showing this same button
+    if (btn.isConnected) { btn.textContent = 'Download'; btn.disabled = false; }
+  }, 1500);
 }
 
 function showLightboxAt(index) {
