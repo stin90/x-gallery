@@ -1,18 +1,27 @@
 // Captures media from tweets as they appear and shows them in a grid overlay.
 
-const collected = new Map(); // tweetId -> { images: [], videoPoster, link, author }
+const collected = new Map(); // tweetId -> { images, videoPoster, videoId, link, name, handle, text }
 const rendered = new Set();  // tweetIds already in the grid
 const activeHls = new Map(); // videoElement -> Hls instance
 let galleryOpen = false;
 let galleryEl = null;
 let videoObserver = null;
-let autoplayMode = 'off'; // 'off' | 'hover' | 'all'
+let autoplayMode = 'off';    // 'off' | 'all'
+let mediaFilter = 'all';     // 'all' | 'photos' | 'videos'   (feat/media-filter)
+let layoutMode = 'grid';     // 'grid' | 'masonry'            (feat/masonry)
+let tileSize = 220;          // px, tile width / masonry column width (feat/density)
+let searchQuery = '';        // session-only text filter, lowercased (feat/search)
+let searchDebounce = null;
+const TILE_MIN = 120, TILE_MAX = 400, TILE_STEP = 40;
 
-// Load saved autoplay preference
+// Load saved preferences in a single multi-key read
 try {
-  chrome.storage.local.get('autoplayMode', (data) => {
+  chrome.storage.local.get(['autoplayMode', 'mediaFilter', 'layoutMode', 'tileSize'], (data) => {
     if (chrome.runtime.lastError) return;
-    if (data.autoplayMode) autoplayMode = data.autoplayMode;
+    if (data.autoplayMode === 'off' || data.autoplayMode === 'all') autoplayMode = data.autoplayMode;
+    if (data.mediaFilter === 'all' || data.mediaFilter === 'photos' || data.mediaFilter === 'videos') mediaFilter = data.mediaFilter;
+    if (data.layoutMode === 'grid' || data.layoutMode === 'masonry') layoutMode = data.layoutMode;
+    if (typeof data.tileSize === 'number') tileSize = Math.max(TILE_MIN, Math.min(TILE_MAX, data.tileSize));
   });
 } catch (e) { /* noop */ }
 
@@ -131,6 +140,7 @@ function renderGallery() {
     const src = data.images[0] || data.videoPoster;
     const cell = document.createElement('div');
     cell.className = 'xg-cell';
+    cell.dataset.search = `${data.name || ''} ${data.handle || ''} ${data.text || ''}`.toLowerCase();
     if (data.videoPoster && data.images.length === 0) {
       cell.classList.add('xg-video');
       cell.addEventListener('click', (e) => {
@@ -208,6 +218,7 @@ function renderGallery() {
   }
 
   galleryEl.querySelector('.xg-title').textContent = `Gallery (${collected.size})`;
+  applyFilters();
   requestAnimationFrame(syncAllVideoPositions);
   ensureGalleryFillsScreen();
 }
@@ -333,6 +344,46 @@ function cycleAutoplayMode() {
   setAutoplayMode(autoplayMode === 'off' ? 'all' : 'off');
 }
 
+const layoutLabels = { grid: 'Grid', masonry: 'Masonry' };
+
+// Show/hide grid cells based on the media-type filter and the text search.
+// Read by feat/media-filter (mediaFilter) and feat/search (searchQuery).
+function applyFilters() {
+  if (!galleryEl) return;
+  galleryEl.querySelectorAll('.xg-cell').forEach((cell) => {
+    const isVideo = cell.classList.contains('xg-video');
+    const typeOk = mediaFilter === 'all' ? true : (mediaFilter === 'videos' ? isVideo : !isVideo);
+    const textOk = !searchQuery || (cell.dataset.search || '').includes(searchQuery);
+    const show = typeOk && textOk;
+    cell.classList.toggle('xg-hidden', !show);
+    if (!show && isVideo) stopCellVideo(cell); // never leave a hidden video playing
+  });
+  if (layoutMode !== 'masonry') requestAnimationFrame(syncAllVideoPositions);
+}
+
+// --- feat/media-filter: implement body ---
+function setMediaFilter(mode) {
+  // TODO(feat/media-filter): set mediaFilter + persist; update .xg-filter active button;
+  // stop now-hidden videos; applyFilters(); re-observe visible videos when autoplayMode==='all'.
+}
+
+// --- feat/search: implement body ---
+function handleSearchInput(value) {
+  // TODO(feat/search): debounce ~200ms via searchDebounce; set searchQuery = value.trim().toLowerCase(); applyFilters().
+}
+
+// --- feat/density: implement body ---
+function setTileSize(px) {
+  // TODO(feat/density): clamp to [TILE_MIN, TILE_MAX]; persist; set --xg-tile on .xg-grid;
+  // re-seed syncAllVideoPositions in grid mode; disable +/- at bounds.
+}
+
+// --- feat/masonry: implement body ---
+function setLayoutMode(mode) {
+  // TODO(feat/masonry): set layoutMode + persist; toggle #xg-overlay.xg-masonry;
+  // update .xg-layout label; requestAnimationFrame(syncAllVideoPositions) when switching to grid.
+}
+
 function openGallery() {
   if (galleryEl) return;
   galleryEl = document.createElement('div');
@@ -341,6 +392,17 @@ function openGallery() {
     <div class="xg-bar">
       <span class="xg-title">Gallery (${collected.size})</span>
       <div class="xg-bar-actions">
+        <input class="xg-search" type="search" placeholder="Search author or text" aria-label="Search">
+        <div class="xg-filter">
+          <button data-filter="all">All</button>
+          <button data-filter="photos">Photos</button>
+          <button data-filter="videos">Videos</button>
+        </div>
+        <div class="xg-density">
+          <button class="xg-tile-minus" aria-label="Smaller tiles">−</button>
+          <button class="xg-tile-plus" aria-label="Larger tiles">+</button>
+        </div>
+        <button class="xg-layout">Layout: ${layoutLabels[layoutMode]}</button>
         <button class="xg-autoplay">Autoplay: ${autoplayLabels[autoplayMode]}</button>
         <button class="xg-close">Close</button>
       </div>
@@ -352,7 +414,17 @@ function openGallery() {
   document.body.classList.add('xg-no-scroll');
   galleryEl.querySelector('.xg-close').addEventListener('click', closeGallery);
   galleryEl.querySelector('.xg-autoplay').addEventListener('click', cycleAutoplayMode);
+  galleryEl.querySelector('.xg-layout').addEventListener('click', () => setLayoutMode(layoutMode === 'grid' ? 'masonry' : 'grid'));
+  galleryEl.querySelector('.xg-tile-minus').addEventListener('click', () => setTileSize(tileSize - TILE_STEP));
+  galleryEl.querySelector('.xg-tile-plus').addEventListener('click', () => setTileSize(tileSize + TILE_STEP));
+  galleryEl.querySelectorAll('.xg-filter button').forEach((b) => b.addEventListener('click', () => setMediaFilter(b.dataset.filter)));
+  galleryEl.querySelector('.xg-search').addEventListener('input', (e) => handleSearchInput(e.target.value));
   galleryEl.addEventListener('scroll', onGalleryScroll);
+  // Initialize control state from restored preferences
+  galleryEl.classList.toggle('xg-masonry', layoutMode === 'masonry');
+  galleryEl.querySelector('.xg-grid').style.setProperty('--xg-tile', tileSize + 'px');
+  const activeFilterBtn = galleryEl.querySelector(`.xg-filter button[data-filter="${mediaFilter}"]`);
+  if (activeFilterBtn) activeFilterBtn.classList.add('active');
   galleryOpen = true;
   lastFillSize = 0;
   fillRetries = 0;
@@ -842,6 +914,7 @@ function showLightboxAt(index) {
     img.className = 'xg-lb-media';
     img.src = item.src;
     stage.appendChild(img);
+    lightboxState.videoEl = null;
   } else {
     const videoEl = document.createElement('video');
     videoEl.className = 'xg-lb-media';
@@ -850,6 +923,7 @@ function showLightboxAt(index) {
     videoEl.playsInline = true;
     videoEl.poster = item.poster || '';
     stage.appendChild(videoEl);
+    lightboxState.videoEl = videoEl;
 
     if (item.videoId) {
       try {

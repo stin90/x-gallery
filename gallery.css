@@ -39,6 +39,8 @@ body.xg-no-scroll::-webkit-scrollbar {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 #xg-overlay .xg-close {
@@ -66,12 +68,56 @@ body.xg-no-scroll::-webkit-scrollbar {
   background: #4a5568;
 }
 
+/* Shared pill styling for the new top-bar controls (feat/* refine below) */
+#xg-overlay .xg-layout,
+#xg-overlay .xg-filter button,
+#xg-overlay .xg-density button {
+  background: #38444d;
+  color: #fff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+}
+#xg-overlay .xg-layout:hover,
+#xg-overlay .xg-filter button:hover,
+#xg-overlay .xg-density button:hover {
+  background: #4a5568;
+}
+#xg-overlay .xg-filter,
+#xg-overlay .xg-density {
+  display: flex;
+  gap: 4px;
+}
+#xg-overlay .xg-search {
+  background: #22303c;
+  color: #fff;
+  border: 1px solid #38444d;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  outline: none;
+  min-width: 180px;
+}
+#xg-overlay .xg-search::placeholder { color: #8899a6; }
+#xg-overlay .xg-search:focus { border-color: #1d9bf0; }
+
+/* Hidden by the media-type filter / search (feat/media-filter, feat/search) */
+#xg-overlay .xg-cell.xg-hidden { display: none !important; }
+
+/* feat/media-filter: active segmented button style added on this branch */
+/* feat/density: +/- disabled state added on this branch */
+
 #xg-overlay .xg-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--xg-tile, 220px), 1fr));
   gap: 4px;
   padding: 4px;
 }
+
+/* feat/masonry: #xg-overlay.xg-masonry { ... } block added on this branch */
 
 #xg-overlay .xg-cell {
   position: relative;
