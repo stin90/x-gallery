@@ -526,8 +526,10 @@ function openLightbox(tweetId, imageIndex = 0) {
     <button class="xg-lb-prev" aria-label="Previous">\u2039</button>
     <button class="xg-lb-next" aria-label="Next">\u203a</button>
     <div class="xg-lb-counter"></div>
-    <div class="xg-lb-info"></div>
-    <div class="xg-lb-stage"></div>
+    <div class="xg-lb-content">
+      <div class="xg-lb-stage"></div>
+      <div class="xg-lb-info"></div>
+    </div>
   `;
   document.body.appendChild(modal);
 
@@ -613,11 +615,14 @@ function tryLoadMoreAndAdvance(target) {
 
 function renderPostInfo(container, item) {
   container.innerHTML = '';
+  const content = container.parentElement; // .xg-lb-content
   if (!item || (!item.name && !item.handle && !item.text)) {
     container.style.display = 'none';
+    if (content) content.classList.add('xg-lb-nocaption'); // let media use full height
     return;
   }
   container.style.display = '';
+  if (content) content.classList.remove('xg-lb-nocaption');
   if (item.name || item.handle) {
     const meta = document.createElement('div');
     meta.className = 'xg-lb-info-meta';

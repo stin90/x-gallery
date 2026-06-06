@@ -245,11 +245,24 @@ body.xg-no-scroll::-webkit-scrollbar {
   background: rgba(0, 0, 0, 0.9);
 }
 
-#xg-lightbox .xg-lb-stage {
+/* Media + caption stack vertically and are centered as a group, so the caption
+   always sits below the media — the video's native controls are never covered,
+   at any aspect ratio. The media is capped by viewport units (not a percentage of
+   the flex parent, which doesn't resolve under a max-height-only container) so it
+   leaves guaranteed room for the caption below. */
+#xg-lightbox .xg-lb-content {
   position: relative;
   z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   max-width: 90vw;
   max-height: 85vh;
+}
+
+#xg-lightbox .xg-lb-stage {
+  max-width: 90vw;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -258,10 +271,15 @@ body.xg-no-scroll::-webkit-scrollbar {
 #xg-lightbox .xg-lb-media {
   display: block;
   max-width: 90vw;
-  max-height: 85vh;
+  max-height: 70vh;       /* leave room for the caption below */
   border-radius: 8px;
   background: #000;
   outline: none;
+}
+
+/* No caption (renderPostInfo found no text) — let the media use the full height */
+#xg-lightbox .xg-lb-content.xg-lb-nocaption .xg-lb-media {
+  max-height: 85vh;
 }
 
 #xg-lightbox .xg-lb-close,
@@ -329,15 +347,11 @@ body.xg-no-scroll::-webkit-scrollbar {
   font-weight: 600;
 }
 
-/* Account + post text shown in the modal */
+/* Account + post text shown in the modal, stacked below the media (see .xg-lb-content) */
 #xg-lightbox .xg-lb-info {
-  position: absolute;
-  z-index: 2;
-  left: 50%;
-  bottom: 56px;
-  transform: translateX(-50%);
-  max-width: min(80vw, 600px);
-  max-height: 28vh;
+  flex: 0 0 auto;
+  max-width: min(90vw, 600px);
+  max-height: 14vh;
   overflow-y: auto;
   background: rgba(0, 0, 0, 0.6);
   color: #fff;
