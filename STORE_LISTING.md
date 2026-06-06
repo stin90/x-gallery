@@ -63,3 +63,10 @@ PERMISSIONS
 OPEN SOURCE
 
 Source code, issues, and contributions: https://github.com/stin90/x-gallery
+
+SUPPORT DEVELOPMENT
+
+X Gallery View is free, open source, and ad-free. If it's useful to you, you can chip in
+to support continued development:
+• Ko-fi: https://ko-fi.com/stin90
+• GitHub Sponsors: https://github.com/sponsors/stin90

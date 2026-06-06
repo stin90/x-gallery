@@ -49,6 +49,15 @@ See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
 
 The content script reads tweet articles already on the page, extracts media URLs, and renders a fixed-position overlay grid. For videos, the background service worker observes `.m3u8` requests made by X's own player and forwards them to the content script, which plays them inline using [hls.js](https://github.com/video-dev/hls.js). Nothing leaves your browser.
 
+## Support
+
+X Gallery View is free, open source, and ad-free. If it's been useful, you can support development:
+
+- ☕ [Ko-fi](https://ko-fi.com/stin90) — one-time or monthly
+- ❤️ [GitHub Sponsors](https://github.com/sponsors/stin90) — one-time or monthly
+
+Every bit helps keep this — and my other free extensions — maintained and free for everyone. Thank you!
+
 ## License
 
 [MIT](LICENSE)

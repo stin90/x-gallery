@@ -68,6 +68,24 @@ body.xg-no-scroll::-webkit-scrollbar {
   background: #4a5568;
 }
 
+#xg-overlay .xg-donate {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #38444d;
+  color: #fff;
+  text-decoration: none;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+#xg-overlay .xg-donate:hover {
+  background: #f91880; /* X's pink — a gentle "support" accent */
+}
+
 /* Shared pill styling for the new top-bar controls (feat/* refine below) */
 #xg-overlay .xg-layout,
 #xg-overlay .xg-filter button,

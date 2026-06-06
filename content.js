@@ -435,6 +435,7 @@ function openGallery() {
         </div>
         <button class="xg-layout">Layout: ${layoutLabels[layoutMode]}</button>
         <button class="xg-autoplay">Autoplay: ${autoplayLabels[autoplayMode]}</button>
+        <a class="xg-donate" href="https://github.com/stin90/x-gallery#support" target="_blank" rel="noopener" title="Support development">♥ Donate</a>
         <button class="xg-close">Close</button>
       </div>
     </div>
