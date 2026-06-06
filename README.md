@@ -21,7 +21,7 @@ Click the extension icon and the page flips into a clean grid of every image and
 
 1. Clone this repo:
    ```
-   git clone https://github.com/amirsoltaani/x-gallery.git
+   git clone https://github.com/stin90/x-gallery.git
    ```
 2. In Chrome, open `chrome://extensions`
 3. Enable **Developer mode** (top right)

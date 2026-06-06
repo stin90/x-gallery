@@ -26,4 +26,4 @@ If this policy changes, updates will be posted here.
 
 ## Contact
 
-If you have questions, open an issue at https://github.com/amirsoltaani/x-gallery/issues
+If you have questions, open an issue at https://github.com/stin90/x-gallery/issues

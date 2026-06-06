@@ -62,4 +62,4 @@ PERMISSIONS
 
 OPEN SOURCE
 
-Source code, issues, and contributions: https://github.com/amirsoltaani/x-gallery
+Source code, issues, and contributions: https://github.com/stin90/x-gallery
