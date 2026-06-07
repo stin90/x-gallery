@@ -1,8 +1,15 @@
-X Media Gallery turns your X (Twitter) timeline into a media-first gallery — and downloads any photo or video in one click (videos save with sound). Click the
-extension icon and the page flips into a clean grid of every image and video from the
-tweets you've loaded. Click again to go back to the normal timeline.
+X Media Gallery turns your X (Twitter) timeline into a clean, media-first gallery — and lets
+you download any photo or video in one click. Videos save as a single MP4 with sound.
+
+Click the extension icon and the page flips into a grid of every image and video from the
+tweets you've loaded; click again to return to the normal timeline.
 
 FEATURES
+
+• One-click download — Save any image or video straight from the full-screen viewer.
+  Images download at original resolution; videos download WITH sound — X serves audio as a
+  separate stream, so the extension combines audio and video into a single MP4 right in
+  your browser. No server, no re-encoding, no quality loss.
 
 • One-click toggle — Switch between the regular timeline and the gallery view from the
   toolbar icon (or press Ctrl+Shift+G).
@@ -28,11 +35,6 @@ FEATURES
 
 • Open the original post — A "View post" link on each tile and in the viewer takes you
   straight to the tweet on X.
-
-• One-click download — Save any image or video from the viewer. Images download at
-  original resolution, and videos download with sound: X serves audio as a separate
-  stream, so the extension combines the audio and video into a single MP4 right in your
-  browser.
 
 • Autoplay toggle — Choose Off or On for in-gallery video autoplay. Off is light on
   resources; On plays every visible video muted as you scroll.
