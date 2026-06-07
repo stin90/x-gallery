@@ -68,5 +68,7 @@ SUPPORT DEVELOPMENT
 
 X Gallery View is free, open source, and ad-free. If it's useful to you, you can chip in
 to support continued development:
-• Ko-fi: https://ko-fi.com/stin90
 • GitHub Sponsors: https://github.com/sponsors/stin90
+• Ko-fi: https://ko-fi.com/stin90
+• Buy Me a Coffee: https://buymeacoffee.com/stin90
+• PayPal: https://paypal.me/amirstin

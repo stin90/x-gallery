@@ -53,8 +53,10 @@ The content script reads tweet articles already on the page, extracts media URLs
 
 X Gallery View is free, open source, and ad-free. If it's been useful, you can support development:
 
-- ☕ [Ko-fi](https://ko-fi.com/stin90) — one-time or monthly
-- ❤️ [GitHub Sponsors](https://github.com/sponsors/stin90) — one-time or monthly
+- ❤️ [GitHub Sponsors](https://github.com/sponsors/stin90)
+- ☕ [Ko-fi](https://ko-fi.com/stin90)
+- 🧡 [Buy Me a Coffee](https://buymeacoffee.com/stin90)
+- 💸 [PayPal](https://paypal.me/amirstin)
 
 Every bit helps keep this — and my other free extensions — maintained and free for everyone. Thank you!
 
