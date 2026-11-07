@@ -139,19 +139,27 @@ body.xg-no-scroll::-webkit-scrollbar {
   padding: 4px;
 }
 
-/* feat/masonry: aspect-preserving column layout (disables the fixed-position pop-out) */
+/* feat/masonry: aspect-preserving column layout (disables the fixed-position pop-out).
+   Columns are real flex containers filled by JS (content.js), so appending tiles
+   during infinite scroll never rebalances/reshuffles what is already on screen —
+   unlike CSS multi-column layout, which rebalanced on every append. */
 #xg-overlay.xg-masonry .xg-grid {
-  display: block;
-  column-width: var(--xg-tile, 220px);
-  column-gap: 4px;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+#xg-overlay.xg-masonry .xg-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 #xg-overlay.xg-masonry .xg-cell {
   aspect-ratio: auto;
   overflow: visible;
-  break-inside: avoid;
   width: 100%;
-  display: inline-block;
-  margin: 0 0 4px;
+  margin: 0;
 }
 #xg-overlay.xg-masonry .xg-cell.xg-photo img,
 #xg-overlay.xg-masonry .xg-cell video {

@@ -14,6 +14,14 @@ let searchQuery = '';        // session-only text filter, lowercased (feat/searc
 let searchDebounce = null;
 const TILE_MIN = 120, TILE_MAX = 400, TILE_STEP = 40;
 
+// feat/masonry: JS column distribution. Each tile is placed into the shortest
+// column and never moves again, so infinite-scroll appends (and late-loading
+// images) can no longer reshuffle tiles the way CSS multi-column layout did.
+let masonryCols = [];        // column <div> elements (empty while in grid mode)
+let masonryHeights = [];     // running px height per column (parallel to masonryCols)
+const renderedCells = [];    // every rendered .xg-cell, in insertion order
+let resizeDebounce = null;
+
 // Load saved preferences in a single multi-key read
 try {
   chrome.storage.local.get(['autoplayMode', 'mediaFilter', 'layoutMode', 'tileSize'], (data) => {
@@ -129,9 +137,92 @@ function ensureGalleryFillsScreen() {
   }
 }
 
+// feat/masonry: number of equal-width columns that fit at the current tile size.
+function masonryColumnCount(grid) {
+  const gap = 4;
+  const avail = grid.clientWidth - 8; // .xg-grid keeps 4px padding on both sides
+  return Math.max(1, Math.floor((avail + gap) / (tileSize + gap)));
+}
+
+// Create `count` empty columns inside the grid and reset the height tracking.
+function buildMasonryColumns(grid, count) {
+  masonryCols = [];
+  masonryHeights = [];
+  for (let i = 0; i < count; i++) {
+    const col = document.createElement('div');
+    col.className = 'xg-col';
+    grid.appendChild(col);
+    masonryCols.push(col);
+    masonryHeights.push(0);
+  }
+}
+
+// True when a cell passes both the media-type filter and the search query.
+function cellMatchesFilter(cell) {
+  const isVideo = cell.classList.contains('xg-video');
+  const typeOk = mediaFilter === 'all' ? true : (mediaFilter === 'videos' ? isVideo : !isVideo);
+  const textOk = !searchQuery || (cell.dataset.search || '').includes(searchQuery);
+  return typeOk && textOk;
+}
+
+// Append a cell to the currently-shortest column. Once placed, a cell never
+// moves during scroll — appending later cells only grows a column downward, so
+// nothing that is already on screen reshuffles.
+function placeCellMasonry(cell) {
+  if (masonryCols.length === 0 || cell.classList.contains('xg-hidden')) return;
+  let idx = 0;
+  for (let i = 1; i < masonryHeights.length; i++) {
+    if (masonryHeights[i] < masonryHeights[idx]) idx = i;
+  }
+  const col = masonryCols[idx];
+  col.appendChild(cell);
+  // The real height is unknown until the image/poster lays out; assume a square
+  // tile for the placement decision, then correct the running total on load.
+  masonryHeights[idx] += tileSize;
+  const media = cell.querySelector('img, video');
+  const measure = () => {
+    if (masonryCols[idx] === col) masonryHeights[idx] = col.offsetHeight;
+  };
+  if (media && media.tagName === 'IMG') {
+    if (media.complete && media.naturalHeight) measure();
+    else media.addEventListener('load', measure, { once: true });
+  } else {
+    // <video> renders its poster; measure once it has laid out
+    requestAnimationFrame(measure);
+  }
+}
+
+// Rebuild the whole masonry layout from visible renderedCells (insertion order).
+// Only invoked on user-driven changes (filter, search, mode switch, tile size,
+// window resize) — never during scroll — so a one-time reflow here is desired.
+function rebuildMasonry() {
+  if (!galleryEl) return;
+  const grid = galleryEl.querySelector('.xg-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  buildMasonryColumns(grid, masonryColumnCount(grid));
+  for (const cell of renderedCells) {
+    if (!cell.classList.contains('xg-hidden')) placeCellMasonry(cell);
+  }
+}
+
+// Move every cell out of its column back into a single flat grid, in order.
+function flattenMasonry() {
+  if (!galleryEl) return;
+  const grid = galleryEl.querySelector('.xg-grid');
+  if (!grid) return;
+  masonryCols = [];
+  masonryHeights = [];
+  grid.innerHTML = '';
+  for (const cell of renderedCells) grid.appendChild(cell);
+}
+
 function renderGallery() {
   if (!galleryEl) return;
   const grid = galleryEl.querySelector('.xg-grid');
+  if (layoutMode === 'masonry' && masonryCols.length === 0) {
+    buildMasonryColumns(grid, masonryColumnCount(grid));
+  }
 
   for (const [id, data] of collected) {
     if (rendered.has(id)) continue;
@@ -218,11 +309,17 @@ function renderGallery() {
       badge.textContent = `+${data.images.length - 1}`;
       cell.appendChild(badge);
     }
-    grid.appendChild(cell);
+    const show = cellMatchesFilter(cell);
+    cell.classList.toggle('xg-hidden', !show);
+    renderedCells.push(cell);
+    if (layoutMode === 'masonry') {
+      if (show) placeCellMasonry(cell);
+    } else {
+      grid.appendChild(cell);
+    }
   }
 
   galleryEl.querySelector('.xg-title').textContent = `Gallery (${collected.size})`;
-  applyFilters();
   requestAnimationFrame(syncAllVideoPositions);
   ensureGalleryFillsScreen();
 }
@@ -269,7 +366,11 @@ function onGalleryScroll() {
 
 function startCellVideo(cell) {
   const vid = cell.querySelector('video');
-  if (!vid || !vid.dataset.videoId || activeHls.has(vid)) return;
+  if (!vid || !vid.dataset.videoId) return;
+  if (activeHls.has(vid)) {
+    vid.play().catch(() => {});
+    return;
+  }
   try {
     chrome.runtime.sendMessage(
       { action: 'getVideoUrl', videoId: vid.dataset.videoId },
@@ -350,19 +451,28 @@ function cycleAutoplayMode() {
 
 const layoutLabels = { grid: 'Grid', masonry: 'Masonry' };
 
-// Show/hide grid cells based on the media-type filter and the text search.
+// Show/hide grid cells based on the media-type filter and the text search,
+// and reflow the layout so visible tiles fill from the first column/row.
 // Read by feat/media-filter (mediaFilter) and feat/search (searchQuery).
 function applyFilters() {
   if (!galleryEl) return;
-  galleryEl.querySelectorAll('.xg-cell').forEach((cell) => {
+  for (const cell of renderedCells) {
     const isVideo = cell.classList.contains('xg-video');
-    const typeOk = mediaFilter === 'all' ? true : (mediaFilter === 'videos' ? isVideo : !isVideo);
-    const textOk = !searchQuery || (cell.dataset.search || '').includes(searchQuery);
-    const show = typeOk && textOk;
+    const show = cellMatchesFilter(cell);
     cell.classList.toggle('xg-hidden', !show);
     if (!show && isVideo) stopCellVideo(cell); // never leave a hidden video playing
-  });
-  if (layoutMode !== 'masonry') requestAnimationFrame(syncAllVideoPositions);
+  }
+  if (layoutMode === 'masonry') rebuildMasonry();
+  else requestAnimationFrame(syncAllVideoPositions);
+  // Re-arm autoplay for the now-visible videos
+  if (autoplayMode === 'all' && mediaFilter !== 'photos' && videoObserver) {
+    for (const cell of renderedCells) {
+      if (cell.classList.contains('xg-video') && !cell.classList.contains('xg-hidden')) {
+        videoObserver.observe(cell);
+      }
+    }
+  }
+  ensureGalleryFillsScreen();
 }
 
 // feat/media-filter: All / Photos / Videos
@@ -372,13 +482,12 @@ function setMediaFilter(mode) {
   if (galleryEl) {
     galleryEl.querySelectorAll('.xg-filter button').forEach((b) =>
       b.classList.toggle('active', b.dataset.filter === mode));
-    if (mode === 'photos') galleryEl.querySelectorAll('.xg-cell.xg-video').forEach(stopCellVideo);
+    if (mode === 'photos') renderedCells.forEach((c) => {
+      if (c.classList.contains('xg-video')) stopCellVideo(c);
+    });
   }
+  fillRetries = 0;
   applyFilters();
-  // Re-arm autoplay for the now-visible videos
-  if (autoplayMode === 'all' && mode !== 'photos' && videoObserver && galleryEl) {
-    galleryEl.querySelectorAll('.xg-cell.xg-video:not(.xg-hidden)').forEach((c) => videoObserver.observe(c));
-  }
 }
 
 // feat/search: debounced author/text filter
@@ -402,7 +511,9 @@ function setTileSize(px) {
     if (minus) minus.disabled = tileSize <= TILE_MIN;
     if (plus) plus.disabled = tileSize >= TILE_MAX;
   }
-  if (layoutMode !== 'masonry') requestAnimationFrame(syncAllVideoPositions);
+  // Tile size drives the column count, so masonry must re-lay-out.
+  if (layoutMode === 'masonry') rebuildMasonry();
+  else requestAnimationFrame(syncAllVideoPositions);
 }
 
 // feat/masonry: square grid <-> aspect-preserving columns
@@ -412,7 +523,22 @@ function setLayoutMode(mode) {
   if (galleryEl) galleryEl.classList.toggle('xg-masonry', mode === 'masonry');
   const btn = galleryEl && galleryEl.querySelector('.xg-layout');
   if (btn) btn.textContent = 'Layout: ' + layoutLabels[mode];
+  if (galleryEl) {
+    if (mode === 'masonry') rebuildMasonry();
+    else flattenMasonry();
+  }
   if (mode === 'grid') requestAnimationFrame(syncAllVideoPositions);
+}
+
+// Window resize changes how many columns fit; rebuild masonry (debounced) so the
+// grid re-flows to the new width. This is user-driven, never triggered by scroll.
+function onWindowResize() {
+  if (resizeDebounce) clearTimeout(resizeDebounce);
+  resizeDebounce = setTimeout(() => {
+    if (!galleryEl) return;
+    if (layoutMode === 'masonry') rebuildMasonry();
+    else requestAnimationFrame(syncAllVideoPositions);
+  }, 150);
 }
 
 function openGallery() {
@@ -452,6 +578,7 @@ function openGallery() {
   galleryEl.querySelectorAll('.xg-filter button').forEach((b) => b.addEventListener('click', () => setMediaFilter(b.dataset.filter)));
   galleryEl.querySelector('.xg-search').addEventListener('input', (e) => handleSearchInput(e.target.value));
   galleryEl.addEventListener('scroll', onGalleryScroll);
+  window.addEventListener('resize', onWindowResize);
   // Initialize control state from restored preferences
   galleryEl.classList.toggle('xg-masonry', layoutMode === 'masonry');
   galleryEl.querySelector('.xg-grid').style.setProperty('--xg-tile', tileSize + 'px');
@@ -478,9 +605,14 @@ function closeGallery() {
     galleryEl.removeEventListener('scroll', onGalleryScroll);
     galleryEl.remove();
   }
+  window.removeEventListener('resize', onWindowResize);
+  if (resizeDebounce) { clearTimeout(resizeDebounce); resizeDebounce = null; }
   document.documentElement.classList.remove('xg-no-scroll');
   document.body.classList.remove('xg-no-scroll');
   rendered.clear();
+  renderedCells.length = 0;
+  masonryCols = [];
+  masonryHeights = [];
   galleryEl = null;
   galleryOpen = false;
 }
