@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "X Media Gallery — Download Photos & Videos",
   "short_name": "X Gallery",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Browse your X (Twitter) timeline as a media gallery and download photos and videos — videos save with sound.",
   "permissions": ["webRequest", "storage"],
   "host_permissions": [
