@@ -19,6 +19,7 @@ const TILE_MIN = 120, TILE_MAX = 400, TILE_STEP = 40;
 // images) can no longer reshuffle tiles the way CSS multi-column layout did.
 let masonryCols = [];        // column <div> elements (empty while in grid mode)
 let masonryHeights = [];     // running px height per column (parallel to masonryCols)
+let masonryColWidth = 0;     // px width of one column, measured once per build
 const renderedCells = [];    // every rendered .xg-cell, in insertion order
 let resizeDebounce = null;
 
@@ -70,11 +71,15 @@ function extractMedia(article) {
   if (!id || collected.has(id)) return;
 
   const images = [];
+  let aspect = null; // width / height of the first photo, if the timeline already loaded it
   // Tweet photos use this testid
   article.querySelectorAll('div[data-testid="tweetPhoto"] img').forEach(img => {
     if (img.src && img.src.includes('/media/')) {
       // Bump to original size
       const fullRes = img.src.replace(/&name=\w+/, '&name=large');
+      if (images.length === 0 && img.complete && img.naturalWidth && img.naturalHeight) {
+        aspect = img.naturalWidth / img.naturalHeight;
+      }
       images.push(fullRes);
     }
   });
@@ -98,6 +103,7 @@ function extractMedia(article) {
   const info = getPostInfo(article, link);
   collected.set(id, {
     images,
+    aspect,
     videoPoster,
     videoId,
     link,
@@ -106,7 +112,18 @@ function extractMedia(article) {
     text: info.text,
   });
 
-  if (galleryOpen) renderGallery();
+  if (galleryOpen) scheduleRender();
+}
+
+// A single scan can collect dozens of tweets; render them in one batch per frame
+// instead of re-walking the whole collection (and forcing a layout) per tweet.
+let renderRaf = null;
+function scheduleRender() {
+  if (renderRaf) return;
+  renderRaf = requestAnimationFrame(() => {
+    renderRaf = null;
+    if (galleryOpen) renderGallery();
+  });
 }
 
 function scan() {
@@ -124,16 +141,20 @@ function ensureGalleryFillsScreen() {
   // If the gallery has no room to scroll down, keep loading more
   const remaining = galleryEl.scrollHeight - galleryEl.scrollTop - galleryEl.clientHeight;
   if (remaining < 500) {
-    // Stop if no new content was loaded after several attempts
+    // Stop if no new content was loaded after several attempts at the real end
+    // of the feed. Steps through already-loaded (possibly text-only) tweets
+    // don't count, so a stretch without media can't end the fill early.
+    const wasAtBottom = underlyingPageAtBottom();
     if (collected.size === lastFillSize) {
-      fillRetries++;
+      if (wasAtBottom) fillRetries++;
       if (fillRetries >= MAX_FILL_RETRIES) return;
     } else {
       fillRetries = 0;
       lastFillSize = collected.size;
     }
     scrollUnderlyingPage();
-    fillTimer = setTimeout(ensureGalleryFillsScreen, 1000);
+    // Walking through tweets X already has is fast; waiting on X to fetch more is not
+    fillTimer = setTimeout(ensureGalleryFillsScreen, wasAtBottom ? 1000 : 350);
   }
 }
 
@@ -155,6 +176,7 @@ function buildMasonryColumns(grid, count) {
     masonryCols.push(col);
     masonryHeights.push(0);
   }
+  masonryColWidth = masonryCols[0].clientWidth || tileSize;
 }
 
 // True when a cell passes both the media-type filter and the search query.
@@ -174,22 +196,28 @@ function placeCellMasonry(cell) {
   for (let i = 1; i < masonryHeights.length; i++) {
     if (masonryHeights[i] < masonryHeights[idx]) idx = i;
   }
-  const col = masonryCols[idx];
-  col.appendChild(cell);
-  // The real height is unknown until the image/poster lays out; assume a square
-  // tile for the placement decision, then correct the running total on load.
-  masonryHeights[idx] += tileSize;
+  masonryCols[idx].appendChild(cell);
+  // Every tile's media has a CSS aspect-ratio (a square placeholder until the
+  // real one is known), so its height is computable without reading layout —
+  // and an unloaded lazy image no longer counts as 0px tall.
+  masonryHeights[idx] += cellHeightAt(cell._xgAspect);
+}
+
+function cellHeightAt(aspect) {
+  return masonryColWidth / (aspect || 1) + 4; // + column gap
+}
+
+// Record a tile's real aspect ratio (width / height) once its media reports it,
+// resize the tile, and correct its column's running height to match.
+function setCellAspect(cell, w, h) {
+  if (!w || !h) return;
+  const old = cell._xgAspect;
+  const aspect = w / h;
+  cell._xgAspect = aspect;
   const media = cell.querySelector('img, video');
-  const measure = () => {
-    if (masonryCols[idx] === col) masonryHeights[idx] = col.offsetHeight;
-  };
-  if (media && media.tagName === 'IMG') {
-    if (media.complete && media.naturalHeight) measure();
-    else media.addEventListener('load', measure, { once: true });
-  } else {
-    // <video> renders its poster; measure once it has laid out
-    requestAnimationFrame(measure);
-  }
+  if (media) media.style.aspectRatio = `${w} / ${h}`;
+  const idx = masonryCols.indexOf(cell.parentNode);
+  if (idx >= 0) masonryHeights[idx] += cellHeightAt(aspect) - cellHeightAt(old);
 }
 
 // Rebuild the whole masonry layout from visible renderedCells (insertion order).
@@ -252,19 +280,19 @@ function renderGallery() {
       cell.addEventListener('mouseenter', () => {
         if (autoplayMode !== 'all') startCellVideo(cell);
         vid.muted = false;
-        if (layoutMode !== 'masonry') {
-          syncAllVideoPositions();
-          const cellSize = cell.getBoundingClientRect().width;
-          cell.style.setProperty('--pop-w', (cellSize * 1.8) + 'px');
-          cell.style.setProperty('--pop-h', (cellSize * 1.8) + 'px');
-          cell.classList.add('xg-popped');
-        }
+        popCell(cell);
       });
       cell.addEventListener('mouseleave', () => {
         vid.muted = true;
-        cell.classList.remove('xg-popped');
+        unpopCell(cell);
         if (autoplayMode !== 'all') stopCellVideo(cell);
       });
+      // Learn the poster's aspect ratio so masonry can size the tile before
+      // the video element lays out (otherwise it defaults to 2:1)
+      vid.style.aspectRatio = '1';
+      const probe = new Image();
+      probe.onload = () => setCellAspect(cell, probe.naturalWidth, probe.naturalHeight);
+      probe.src = data.videoPoster;
       // Observe for visibility-based playback
       if (videoObserver) videoObserver.observe(cell);
     } else {
@@ -277,19 +305,14 @@ function renderGallery() {
       const img = document.createElement('img');
       img.src = src;
       img.loading = 'lazy';
+      // Reserve the tile's height before the lazy image loads: the real aspect
+      // ratio if the timeline already had it, else a square until load.
+      if (data.aspect) cell._xgAspect = data.aspect;
+      img.style.aspectRatio = String(data.aspect || 1);
+      img.addEventListener('load', () => setCellAspect(cell, img.naturalWidth, img.naturalHeight), { once: true });
       cell.appendChild(img);
-      cell.addEventListener('mouseenter', () => {
-        if (layoutMode !== 'masonry') {
-          syncAllVideoPositions();
-          const cellSize = cell.getBoundingClientRect().width;
-          cell.style.setProperty('--pop-w', (cellSize * 1.8) + 'px');
-          cell.style.setProperty('--pop-h', (cellSize * 1.8) + 'px');
-          cell.classList.add('xg-popped');
-        }
-      });
-      cell.addEventListener('mouseleave', () => {
-        cell.classList.remove('xg-popped');
-      });
+      cell.addEventListener('mouseenter', () => popCell(cell));
+      cell.addEventListener('mouseleave', () => unpopCell(cell));
     }
     if (data.link) {
       const postLink = document.createElement('a');
@@ -324,24 +347,70 @@ function renderGallery() {
   ensureGalleryFillsScreen();
 }
 
-function scrollUnderlyingPage() {
-  // Scroll up first then back down to re-trigger X's IntersectionObserver
-  // A no-op scrollTo (already at bottom) won't fire new events
-  window.scrollTo(0, Math.max(0, window.scrollY - 2000));
-  setTimeout(() => {
-    window.scrollTo(0, document.documentElement.scrollHeight);
-  }, 100);
+function underlyingPageAtBottom() {
+  return window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 300;
 }
 
+// Advance X's timeline so it renders (and we capture) more tweets.
+// X virtualizes the timeline: only tweets near the viewport exist in the DOM.
+// Jumping straight to the bottom of an already-long feed skipped every tweet in
+// between, so they were never collected (issue #2). Step one screen at a time
+// instead, and only use the up/down nudge once we're really at the end.
+// Returns true if the page was already at the bottom (i.e. waiting on X to load).
+function scrollUnderlyingPage() {
+  const atBottom = underlyingPageAtBottom();
+  if (atBottom) {
+    // Scroll up first then back down to re-trigger X's IntersectionObserver
+    // A no-op scrollTo (already at bottom) won't fire new events
+    window.scrollTo(0, Math.max(0, window.scrollY - 2000));
+    setTimeout(() => {
+      window.scrollTo(0, document.documentElement.scrollHeight);
+    }, 100);
+  } else {
+    window.scrollBy(0, Math.round(window.innerHeight * 0.8));
+  }
+  // Don't rely only on the MutationObserver: capture what's rendered now
+  setTimeout(scan, 250);
+  return atBottom;
+}
+
+// Grid mode hover pop-out. Only the hovered cell is ever fixed-positioned, so
+// scrolling costs one getBoundingClientRect at most instead of one per tile
+// (the per-tile loop is what made grid mode freeze as the gallery grew, #1).
+let poppedCell = null;
 let syncRaf = null;
+
+function positionCell(cell) {
+  const rect = cell.getBoundingClientRect();
+  cell.style.setProperty('--cell-x', (rect.left + rect.width / 2) + 'px');
+  cell.style.setProperty('--cell-y', (rect.top + rect.height / 2) + 'px');
+  cell.style.setProperty('--cell-w', rect.width + 'px');
+  return rect;
+}
+
+function popCell(cell) {
+  if (layoutMode === 'masonry') return;
+  if (poppedCell && poppedCell !== cell) unpopCell(poppedCell);
+  const rect = positionCell(cell);
+  cell.style.setProperty('--pop-w', (rect.width * 1.8) + 'px');
+  cell.style.setProperty('--pop-h', (rect.width * 1.8) + 'px');
+  cell.classList.add('xg-popped');
+  poppedCell = cell;
+  // Flush styles so the grow transition starts from the cell-sized fixed state
+  const media = cell.querySelector('img, video');
+  if (media) void getComputedStyle(media).width;
+  cell.classList.add('xg-grow');
+}
+
+function unpopCell(cell) {
+  cell.classList.remove('xg-popped', 'xg-grow');
+  if (poppedCell === cell) poppedCell = null;
+}
+
 function syncAllVideoPositions() {
-  if (!galleryEl || layoutMode === 'masonry') return;
-  galleryEl.querySelectorAll('.xg-cell.xg-video, .xg-cell.xg-photo').forEach(cell => {
-    const rect = cell.getBoundingClientRect();
-    cell.style.setProperty('--cell-x', (rect.left + rect.width / 2) + 'px');
-    cell.style.setProperty('--cell-y', (rect.top + rect.height / 2) + 'px');
-    cell.style.setProperty('--cell-w', rect.width + 'px');
-  });
+  if (!galleryEl || !poppedCell) return;
+  if (layoutMode === 'masonry' || !poppedCell.isConnected) { unpopCell(poppedCell); return; }
+  positionCell(poppedCell);
 }
 
 function throttledSync() {
@@ -611,6 +680,8 @@ function closeGallery() {
   document.body.classList.remove('xg-no-scroll');
   rendered.clear();
   renderedCells.length = 0;
+  poppedCell = null;
+  if (renderRaf) { cancelAnimationFrame(renderRaf); renderRaf = null; }
   masonryCols = [];
   masonryHeights = [];
   galleryEl = null;
@@ -722,9 +793,12 @@ function tryLoadMoreAndAdvance(target) {
   let attempts = 0;
   const startSize = lightboxState.list.length;
 
+  let steps = 0;
   const tick = () => {
     if (!lightboxState) return;
-    scrollUnderlyingPage();
+    // Stepping through tweets X already rendered doesn't count as a failed
+    // attempt (capped so a huge text-only stretch can't loop forever)
+    if (!scrollUnderlyingPage() && ++steps < 60) attempts--;
     lightboxLoadingTimer = setTimeout(() => {
       if (!lightboxState) return;
       const newList = buildMediaList();
